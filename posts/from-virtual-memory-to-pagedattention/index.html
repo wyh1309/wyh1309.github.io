@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en" dir="auto" data-theme="auto">
+
+<head><meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<meta name="robots" content="index, follow">
+<title>From Virtual Memory to PagedAttention: How Block Tables Map KV Cache | Yihan Wang — AI Infra / LLM Inference</title>
+<meta name="keywords" content="LLM Inference, vLLM, System Design">
+<meta name="description" content="LLM serving learns from operating systems: PagedAttention is virtual memory for the KV cache.">
+<meta name="author" content="">
+<link rel="canonical" href="https://wyh1309.github.io/posts/from-virtual-memory-to-pagedattention/">
+<link crossorigin="anonymous" href="/assets/css/stylesheet.89ca4972ab5e6aaa05e9a0dae0c4bb64b26585bc79e36f5cf33614eea0283abe.css" integrity="sha256-icpJcqteaqoF6aDa4MS7ZLJlhbx5429c8zYU7qAoOr4=" rel="preload stylesheet" as="style">
+<link rel="icon" href="https://wyh1309.github.io/favicon.ico">
+<link rel="icon" type="image/png" sizes="16x16" href="https://wyh1309.github.io/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="https://wyh1309.github.io/favicon-32x32.png">
+<link rel="apple-touch-icon" href="https://wyh1309.github.io/apple-touch-icon.png">
+<link rel="mask-icon" href="https://wyh1309.github.io/safari-pinned-tab.svg">
+<meta name="theme-color" content="#2e2e33">
+<meta name="msapplication-TileColor" content="#2e2e33">
+<link rel="alternate" hreflang="en" href="https://wyh1309.github.io/posts/from-virtual-memory-to-pagedattention/">
+<noscript>
+    <style>
+        #theme-toggle,
+        .top-link {
+            display: none;
+        }
+
+    </style>
+    <style>
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --theme: rgb(29, 30, 32);
+                --entry: rgb(46, 46, 51);
+                --primary: rgb(218, 218, 219);
+                --secondary: rgb(155, 156, 157);
+                --tertiary: rgb(65, 66, 68);
+                --content: rgb(196, 196, 197);
+                --code-block-bg: rgb(46, 46, 51);
+                --code-bg: rgb(55, 56, 62);
+                --border: rgb(51, 51, 51);
+                color-scheme: dark;
+            }
+
+            .list {
+                background: var(--theme);
+            }
+
+            .toc {
+                background: var(--entry);
+            }
+        }
+
+    </style>
+</noscript>
+<script>
+    if (localStorage.getItem("pref-theme") === "dark") {
+        document.querySelector("html").dataset.theme = 'dark';
+    } else if (localStorage.getItem("pref-theme") === "light") {
+       document.querySelector("html").dataset.theme = 'light';
+    } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.querySelector("html").dataset.theme = 'dark';
+    } else {
+        document.querySelector("html").dataset.theme = 'light';
+    }
+
+</script><meta property="og:url" content="https://wyh1309.github.io/posts/from-virtual-memory-to-pagedattention/">
+  <meta property="og:site_name" content="Yihan Wang — AI Infra / LLM Inference">
+  <meta property="og:title" content="From Virtual Memory to PagedAttention: How Block Tables Map KV Cache">
+  <meta property="og:description" content="LLM serving learns from operating systems: PagedAttention is virtual memory for the KV cache.">
+  <meta property="og:locale" content="en_us">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2026-10-18T00:00:00+00:00">
+    <meta property="article:modified_time" content="2026-10-18T00:00:00+00:00">
+    <meta property="article:tag" content="LLM Inference">
+    <meta property="article:tag" content="VLLM">
+    <meta property="article:tag" content="System Design">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="From Virtual Memory to PagedAttention: How Block Tables Map KV Cache">
+  <meta name="twitter:description" content="LLM serving learns from operating systems: PagedAttention is virtual memory for the KV cache.">
+
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position":  1 ,
+      "name": "Posts",
+      "item": "https://wyh1309.github.io/posts/"
+    }, 
+    {
+      "@type": "ListItem",
+      "position":  2 ,
+      "name": "From Virtual Memory to PagedAttention: How Block Tables Map KV Cache",
+      "item": "https://wyh1309.github.io/posts/from-virtual-memory-to-pagedattention/"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "From Virtual Memory to PagedAttention: How Block Tables Map KV Cache",
+  "name": "From Virtual Memory to PagedAttention: How Block Tables Map KV Cache",
+  "description": "LLM serving learns from operating systems: PagedAttention is virtual memory for the KV cache.",
+  "keywords": [
+    "LLM Inference", "vLLM", "System Design"
+  ],
+  "articleBody": "TL;DR PagedAttention is virtual memory for the KV cache. The same idea an OS uses to map virtual pages onto physical frames — a page table — becomes vLLM’s block table that maps logical KV-cache blocks onto physical GPU-memory blocks. Once you see that analogy, PagedAttention and Continuous Batching stop being magic.\nWhy KV-cache memory is a problem During decoding, every generated token attends to all past tokens, so the attention cache grows linearly with sequence length. With naive preallocation you either over-allocate (wasting memory on idle capacity) or fragment it when requests have different lengths. Serving many requests at once makes the waste dominate.\nThe OS lesson: paging Virtual memory splits address space into fixed-size pages, and a page table maps each virtual page to a physical frame. The OS only loads pages that are actually used, so a large logical address space fits in much less physical memory — and fragmentation is handled by the mapping layer, not by the application.\nPagedAttention: block table = page table vLLM reuses this exact design:\nlogical KV blocks --block table--\u003e physical GPU memory blocks flowchart LR L[Logical blocks (per sequence)] --\u003e BT[Block Table] BT --\u003e P1[(Physical block 0)] BT --\u003e P2[(Physical block 1)] BT --\u003e P3[(Physical block N)] The KV cache is split into fixed-size blocks (e.g. 16 tokens each). Each sequence owns a block table mapping its logical blocks to physical blocks in GPU memory. Blocks are allocated on demand, so memory is used only for tokens that exist, and non-contiguous physical blocks are fine — the table resolves the mapping. The result: near-zero fragmentation and the ability to share blocks (used by parallel sampling, where multiple sequences share a prefix).\nTakeaway OS concept PagedAttention virtual page logical KV block physical frame physical GPU block page table block table demand paging on-demand block allocation LLM inference systems are systems-engineering problems. Knowing your OS pays off directly when reading vLLM source.\nThis post is part of an ongoing series on AI-infra fundamentals; next up: Prefill vs. Decode, or why Decode is memory-bound.\n",
+  "wordCount" : "341",
+  "inLanguage": "en",
+  "datePublished": "2026-10-18T00:00:00Z",
+  "dateModified": "2026-10-18T00:00:00Z",
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://wyh1309.github.io/posts/from-virtual-memory-to-pagedattention/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Yihan Wang — AI Infra / LLM Inference",
+    "logo": {
+      "@type": "ImageObject",
+      "url": "https://wyh1309.github.io/favicon.ico"
+    }
+  }
+}
+</script>
+</head>
+<body id="top">
+    <header class="header">
+    <nav class="header-nav">
+        <div class="logo">
+            <a href="https://wyh1309.github.io/" accesskey="h" title="Yihan Wang — AI Infra / LLM Inference (Alt + H)">Yihan Wang — AI Infra / LLM Inference</a>
+            <div class="logo-switches">
+                <button id="theme-toggle" class="theme-toggle" accesskey="t" title="(Alt + T)" aria-label="Toggle theme">
+                    <svg class="moon" xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                    <svg class="sun" xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <ul id="menu" class="menu">
+        </ul>
+    </nav>
+</header>
+<main class="main">
+
+<article class="post-single">
+  <header class="post-header">
+    
+    <h1 class="post-title entry-hint-parent">
+      From Virtual Memory to PagedAttention: How Block Tables Map KV Cache
+    </h1>
+    <div class="post-description">
+      LLM serving learns from operating systems: PagedAttention is virtual memory for the KV cache.
+    </div>
+    <div class="post-meta">
+
+<span title='2026-10-18 00:00:00 +0000 UTC'>October 18, 2026</span>
+
+</div>
+  </header> <details class="toc" >
+    <summary accesskey="c" title="(Alt + C)">
+        <span class="title">Table of Contents</span>
+    </summary>
+
+    <div class="inner"><ul>
+            <li>
+                <a href="#tldr" aria-label="TL;DR">TL;DR</a></li>
+            <li>
+                <a href="#why-kv-cache-memory-is-a-problem" aria-label="Why KV-cache memory is a problem">Why KV-cache memory is a problem</a></li>
+            <li>
+                <a href="#the-os-lesson-paging" aria-label="The OS lesson: paging">The OS lesson: paging</a></li>
+            <li>
+                <a href="#pagedattention-block-table--page-table" aria-label="PagedAttention: block table = page table">PagedAttention: block table = page table</a></li>
+            <li>
+                <a href="#takeaway" aria-label="Takeaway">Takeaway</a>
+            </li>
+        </ul>
+    </div>
+</details>
+
+  <div class="post-content md-content"><h2 id="tldr">TL;DR<a hidden class="anchor" aria-hidden="true" href="#tldr">#</a></h2>
+<p>PagedAttention is <strong>virtual memory for the KV cache</strong>. The same idea an OS uses
+to map virtual pages onto physical frames — a page table — becomes vLLM&rsquo;s <em>block
+table</em> that maps logical KV-cache blocks onto physical GPU-memory blocks. Once you
+see that analogy, PagedAttention and Continuous Batching stop being magic.</p>
+<h2 id="why-kv-cache-memory-is-a-problem">Why KV-cache memory is a problem<a hidden class="anchor" aria-hidden="true" href="#why-kv-cache-memory-is-a-problem">#</a></h2>
+<p>During decoding, every generated token attends to all past tokens, so the
+attention cache grows linearly with sequence length. With naive preallocation you
+either <strong>over-allocate</strong> (wasting memory on idle capacity) or <strong>fragment</strong> it when
+requests have different lengths. Serving many requests at once makes the waste
+dominate.</p>
+<h2 id="the-os-lesson-paging">The OS lesson: paging<a hidden class="anchor" aria-hidden="true" href="#the-os-lesson-paging">#</a></h2>
+<p>Virtual memory splits address space into fixed-size <em>pages</em>, and a <em>page table</em>
+maps each virtual page to a physical <em>frame</em>. The OS only loads pages that are
+actually used, so a large logical address space fits in much less physical memory —
+and fragmentation is handled by the mapping layer, not by the application.</p>
+<h2 id="pagedattention-block-table--page-table">PagedAttention: block table = page table<a hidden class="anchor" aria-hidden="true" href="#pagedattention-block-table--page-table">#</a></h2>
+<p>vLLM reuses this exact design:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"><code class="language-text" data-lang="text"><span style="display:flex;"><span>logical KV blocks  --block table--&gt;  physical GPU memory blocks
+</span></span></code></pre></div><pre tabindex="0"><code class="language-mermaid" data-lang="mermaid">flowchart LR
+    L[Logical blocks (per sequence)] --&gt; BT[Block Table]
+    BT --&gt; P1[(Physical block 0)]
+    BT --&gt; P2[(Physical block 1)]
+    BT --&gt; P3[(Physical block N)]
+</code></pre><ul>
+<li>The KV cache is split into fixed-size <em>blocks</em> (e.g. 16 tokens each).</li>
+<li>Each sequence owns a <strong>block table</strong> mapping its logical blocks to physical
+blocks in GPU memory.</li>
+<li>Blocks are allocated on demand, so memory is used only for tokens that exist,
+and non-contiguous physical blocks are fine — the table resolves the mapping.</li>
+</ul>
+<p>The result: near-zero fragmentation and the ability to <em>share</em> blocks (used by
+parallel sampling, where multiple sequences share a prefix).</p>
+<h2 id="takeaway">Takeaway<a hidden class="anchor" aria-hidden="true" href="#takeaway">#</a></h2>
+<table>
+	<thead>
+			<tr>
+					<th>OS concept</th>
+					<th>PagedAttention</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>virtual page</td>
+					<td>logical KV block</td>
+			</tr>
+			<tr>
+					<td>physical frame</td>
+					<td>physical GPU block</td>
+			</tr>
+			<tr>
+					<td>page table</td>
+					<td>block table</td>
+			</tr>
+			<tr>
+					<td>demand paging</td>
+					<td>on-demand block allocation</td>
+			</tr>
+	</tbody>
+</table>
+<p>LLM inference systems are systems-engineering problems. Knowing your OS pays off
+directly when reading vLLM source.</p>
+<p><em>This post is part of an ongoing series on AI-infra fundamentals; next up:
+Prefill vs. Decode, or why Decode is memory-bound.</em></p>
+
+
+  </div>
+
+  <footer class="post-footer">
+    <ul class="post-tags">
+      <li><a href="https://wyh1309.github.io/tags/llm-inference/">LLM Inference</a></li>
+      <li><a href="https://wyh1309.github.io/tags/vllm/">VLLM</a></li>
+      <li><a href="https://wyh1309.github.io/tags/system-design/">System Design</a></li>
+    </ul>
+  </footer>
+</article>
+    </main>
+    
+<footer class="footer">
+        <span>&copy; 2026 <a href="https://wyh1309.github.io/">Yihan Wang — AI Infra / LLM Inference</a></span> · 
+
+    
+    
+    <span>
+        Powered by
+        <a href="https://gohugo.io/?utm_source=papermod" rel="noopener" target="_blank">Hugo</a> &
+        <a href="https://github.com/adityatelange/hugo-PaperMod/" rel="noopener" target="_blank">PaperMod</a>
+    </span>
+</footer>
+<a href="#top" id="top-link" class="top-link hidden" aria-label="go to top" title="Go to Top (Alt + G)" accesskey="g">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" class="feather feather-chevrons-up">
+        <polyline points="17 11 12 6 7 11"></polyline>
+        <polyline points="17 18 12 13 7 18"></polyline>
+    </svg>
+</a>
+
+<script>
+    let menu = document.getElementById('menu');
+    if (menu) {
+        
+        const scrollPosition = localStorage.getItem("menu-scroll-position");
+        if (scrollPosition) {
+            menu.scrollLeft = parseInt(scrollPosition, 10);
+        }
+        
+        menu.onscroll = function () {
+            localStorage.setItem("menu-scroll-position", menu.scrollLeft);
+        }
+    }
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener("click", function (e) {
+            e.preventDefault();
+            var id = this.getAttribute("href").substr(1);
+            if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                document.querySelector(`[id='${decodeURIComponent(id)}']`).scrollIntoView({
+                    behavior: "smooth"
+                });
+            } else {
+                document.querySelector(`[id='${decodeURIComponent(id)}']`).scrollIntoView();
+            }
+            if (id === "top") {
+                history.replaceState(null, null, " ");
+            } else {
+                history.pushState(null, null, `#${id}`);
+            }
+        });
+    });
+
+</script>
+<script>
+    var toplink = document.getElementById("top-link");
+    window.onscroll = function () {
+        const scrollThreshold = window.innerHeight;
+        if (document.body.scrollTop > scrollThreshold || document.documentElement.scrollTop > scrollThreshold) {
+            toplink.classList.remove("hidden");
+        } else {
+            toplink.classList.add("hidden");
+        }
+    };
+
+</script>
+<script>
+    document.getElementById("theme-toggle").addEventListener("click", () => {
+        const html = document.querySelector("html");
+        if (html.dataset.theme === "dark") {
+            html.dataset.theme = 'light';
+            localStorage.setItem("pref-theme", 'light');
+        } else {
+            html.dataset.theme = 'dark';
+            localStorage.setItem("pref-theme", 'dark');
+        }
+    })
+
+</script>
+</body>
+
+</html>
