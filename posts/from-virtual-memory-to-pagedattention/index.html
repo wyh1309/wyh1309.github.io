@@ -12,7 +12,7 @@
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", sans-serif;
     background: #f7f7f5;
-    color: #1a1a1a;
+    color: #1c1917;
     line-height: 1.8;
     font-size: 17px;
     -webkit-font-smoothing: antialiased;
@@ -32,7 +32,7 @@
   .avatar {
     width: 80px; height: 80px;
     border-radius: 50%;
-    background: #1a1a1a;
+    background: #1c1917;
     color: #fff;
     display: flex; align-items: center; justify-content: center;
     font-size: 32px; font-weight: 700;
@@ -43,7 +43,7 @@
   .sidebar nav { margin-bottom: 28px; }
   .sidebar nav a {
     display: block;
-    color: #1a1a1a;
+    color: #1c1917;
     text-decoration: none;
     font-size: 15px;
     padding: 6px 0;
@@ -149,7 +149,7 @@
 
     <p>The contiguous allocation brings severe problems. As allocation size is fixed, internal fragments appear if usage size is shorter than allocation size. What's more, after several times of allocation, new request may be refused if leaving space is enough but be divided into different places, which we called this phenomenon as external fragments.</p>
 
-    <img src="https://aka.doubaocdn.com/s/fI0hqRQZwU" alt="KV cache fragmentation: green = used tokens, orange = internal fragment, grey = external hole">
+    <img src="https://aka.doubaocdn.com/s/lI2BjDnzJl" alt="KV cache fragmentation: green = used tokens, orange = internal fragment, grey = external hole">
     <p class="caption">Green = used tokens, Orange = internal fragment, Grey = external usage</p>
 
     <h2>The OS lesson: paging</h2>
