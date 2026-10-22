@@ -169,7 +169,6 @@
       <tr><td>Virtual page number</td><td>Logical block number</td></tr>
       <tr><td>Physical page frame</td><td>Physical KV block in GPU memory</td></tr>
       <tr><td>Process</td><td>Sequence (one request)</td></tr>
-      <tr><td>External fragmentation</td><td>Eliminated</td></tr>
     </table>
 
     <p>The rule is simple. The KV cache of one sequence is not stored continuously. It is cut into fixed-size blocks. Each block holds the K and V of 16 tokens, for all layers. For a 7B model, one token takes about 512 KB of KV cache, so one block of 16 tokens is about 8 MB.</p>
